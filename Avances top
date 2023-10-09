@@ -1,0 +1,693 @@
+//***************************************************************************************************************************************
+/* Librería para el uso de la pantalla ILI9341 en modo 8 bits
+ * Basado en el código de martinayotte - https://www.stm32duino.com/viewtopic.php?t=637
+ * Adaptación, migración y creación de nuevas funciones: Pablo Mazariegos y José Morales
+ * Con ayuda de: José Guerra
+ * IE3027: Electrónica Digital 2 - 2019
+ * 
+ * Creacion de juego MiniMarioWorld Diana Abrego y Bryan Ortiz 2023
+ */
+//***************************************************************************************************************************************
+#include <stdint.h>
+#include <stdbool.h>
+#include <TM4C123GH6PM.h>
+#include "inc/hw_ints.h"
+#include "inc/hw_memmap.h"
+#include "inc/hw_types.h"
+#include "driverlib/debug.h"
+#include "driverlib/gpio.h"
+#include "driverlib/interrupt.h"
+#include "driverlib/rom_map.h"
+#include "driverlib/rom.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/timer.h"
+
+#include "bitmaps.h"
+#include "font.h"
+#include "lcd_registers.h"
+
+#define LCD_RST PD_0
+#define LCD_CS PD_1
+#define LCD_RS PD_2
+#define LCD_WR PD_3
+#define LCD_RD PE_1
+int DPINS[] = {PB_0, PB_1, PB_2, PB_3, PB_4, PB_5, PB_6, PB_7}; 
+
+#define L_Mario PD_6
+#define R_Mario PD_7
+#define J_Mario PE_0
+#define L_Lakitu PF_0
+#define R_Lakitu PF_4
+#define DropGI PC_7
+#define DropGD PC_6
+//***************************************************************************************************************************************
+// Functions Prototypes
+//***************************************************************************************************************************************
+void LCD_Init(void);
+void LCD_CMD(uint8_t cmd);
+void LCD_DATA(uint8_t data);
+void SetWindows(unsigned int x1, unsigned int y1, unsigned int x2, unsigned int y2);
+void LCD_Clear(unsigned int c);
+void H_line(unsigned int x, unsigned int y, unsigned int l, unsigned int c);
+void V_line(unsigned int x, unsigned int y, unsigned int l, unsigned int c);
+void Rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h, unsigned int c);
+void FillRect(unsigned int x, unsigned int y, unsigned int w, unsigned int h, unsigned int c);
+void LCD_Print(String text, int x, int y, int fontSize, int color, int background);
+
+void LCD_Bitmap(unsigned int x, unsigned int y, unsigned int width, unsigned int height, unsigned char bitmap[]);
+void LCD_Sprite(int x, int y, int width, int height, unsigned char bitmap[],int columns, int index, char flip, char offset);
+
+void BorradorDeRastro(void);
+void MotionLimit(void); //control de limites de los personajes
+void Movements(int animMario); //movimiento en XY de personajes  
+void Colision(struct Avatars *colisionador);
+void MarioJump(int animMario);
+void GoombasMovements(int option);
+
+extern uint8_t bloques[];
+extern uint8_t cielo[];
+extern uint8_t Mariorun[];
+extern uint8_t Tubo[];
+extern uint8_t GAME[];
+extern uint8_t OVER[];
+//***************************************************************************************************************************************
+//Variables globales
+//***************************************************************************************************************************************
+struct Avatars{
+  uint16_t ancho;
+  uint16_t alto;
+  uint16_t X1;
+  uint16_t X2;
+  uint16_t Y1;
+  uint16_t Y2;
+  uint8_t tope;   //bandera que indica que el proyectil llego al tope de su recorrido
+  uint8_t activador; //badera que indica si esta activada o no.  
+  };
+
+
+struct Avatars Mario;
+struct Avatars Lakitu;
+struct Avatars GoombaI;
+struct Avatars GoombaD;
+
+
+int prevd=0; //esta variable indica la direccion previa de Mario, si iba hacia adelante o atras 
+uint8_t jump_c=0; //contador de tiempo de salto de mario
+uint8_t jump_f=0; //bandera de salto de mario, jump flag 0,1,2
+
+const int Izquierda = 0;
+const int Derecha = 1;
+//------------------------------------------------------------------------------------------------------------------------------------
+//Editable para dificultada de juego
+uint8_t const_jump=30; //constante dificultad de salto. Puede ser entre 1 y 50, 1 siendo dificil de saltar enemigos y 50 facil. NO USAR 0
+uint8_t const_v_G=2; //constante de velocidad de goomba, puede ser entre 1 y 10, siendo 1 rapido, y 10 lento.
+//------------------------------------------------------------------------------------------------------------------------------------
+uint16_t goomba_t_c=0; //goomba time counter, es un contador que sirve para liberar goombas.
+int animGoombaI;    //animacion de goomba
+int animGoombaD;
+uint16_t generalTiming=0; //variable que ayuda a hacer delays
+//***************************************************************************************************************************************
+// Inicialización
+//***************************************************************************************************************************************
+void setup() {
+  SysCtlClockSet(SYSCTL_SYSDIV_2_5|SYSCTL_USE_PLL|SYSCTL_OSC_MAIN|SYSCTL_XTAL_16MHZ);
+
+  pinMode(R_Mario,INPUT_PULLUP);  //PUSHBUTTON Derecha Mario
+  pinMode(L_Mario,INPUT_PULLUP);  //PUSHBUTTON Izquierda Mario
+  pinMode(J_Mario,INPUT_PULLUP);  //PUSHBUTTON Jump Mario
+  pinMode(R_Lakitu,INPUT_PULLUP);  //PUSHBUTTON Derecha Mario
+  pinMode(L_Lakitu,INPUT_PULLUP);  //PUSHBUTTON Izquierda Mario
+  pinMode(DropGI,INPUT_PULLUP);  //PUSHBUTTON Liberar Goomba por izquierda
+  pinMode(DropGD,INPUT_PULLUP);  //PUSHBUTTON Liberar Goomba por izquierda
+  
+  Mario.ancho=32;
+  Mario.alto=35;
+  Mario.X1=150;
+  Mario.Y1=183;
+
+  Lakitu.ancho=32;
+  Lakitu.alto=46;
+  Lakitu.X1=100;
+  Lakitu.Y1=50;
+
+  GoombaI.ancho=27;
+  GoombaI.alto=25;
+  GoombaI.X1=28;
+  GoombaI.Y1=189;
+  GoombaI.tope=0;
+  GoombaI.activador=0;
+
+  GoombaD.ancho=27;
+  GoombaD.alto=25;
+  GoombaD.X1=264;//28
+  GoombaD.Y1=189;
+  GoombaD.tope=0;
+  GoombaD.activador=0;
+  
+  Serial.begin(115200);
+  GPIOPadConfigSet(GPIO_PORTB_BASE, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7, GPIO_STRENGTH_8MA, GPIO_PIN_TYPE_STD_WPU);
+  Serial.println("Inicio");
+  LCD_Init();
+  LCD_Clear(0x00);
+  
+  FillRect(0, 0, 319, 239, 0xC4A2);
+  String text1 = "Mini Mario Wolrd DB!";
+  LCD_Print(text1, 0, 100, 2, 0xffff, 0x421b);
+  //delay(1000);
+    
+  //LCD_Bitmap(unsigned int x, unsigned int y, unsigned int width, unsigned int height, unsigned char bitmap[]);
+  //LCD_Bitmap(228, 180, 46, 40, nube);
+  
+  FillRect(0, 0, 319, 239, 0x861F);
+  LCD_Bitmap(0,0,320,35,cielo);
+  for(int bb=0; bb<319; bb++){
+    LCD_Bitmap(bb, 220,17,19,bloques);
+    bb += 15;
+    }
+  
+}
+//***************************************************************************************************************************************
+// Loop Infinito
+//***************************************************************************************************************************************
+void loop() {
+  LCD_Bitmap(291, 185, 28, 35, Tubo);   //colocacion de tubo derecho
+  int animT = (291)%1;
+  LCD_Sprite(0, 185, 28, 35, Tubo,1,animT,1,1); //colacion tubo izquierdo espejeado
+
+  generalTiming++;
+  goomba_t_c++;
+  
+  if(digitalRead(DropGI)==LOW){
+    GoombaI.activador=1;
+    }
+  if(digitalRead(DropGD)==LOW){
+    GoombaD.activador=1;
+    }
+    
+  Mario.X2 = Mario.X1 + Mario.ancho;  //deben refrescarse constantemente, por eso en el LOOP
+  Mario.Y2 = Mario.Y1 + Mario.alto;   //deben refrescarse constantemente, por eso en el LOOP
+  Lakitu.X2 = Lakitu.X1 + Lakitu.ancho;  //deben refrescarse constantemente, por eso en el LOOP
+  Lakitu.Y2 = Lakitu.Y1 + Lakitu.alto;   //deben refrescarse constantemente, por eso en el LOOP
+  GoombaI.X2 = GoombaI.X1 + GoombaI.ancho;  //deben refrescarse constantemente, por eso en el LOOP
+  GoombaI.Y2 = GoombaI.Y1 + GoombaI.alto;   //deben refrescarse constantemente, por eso en el LOOP
+  GoombaD.X2 = GoombaD.X1 + GoombaD.ancho;  //deben refrescarse constantemente, por eso en el LOOP
+  GoombaD.Y2 = GoombaD.Y1 + GoombaD.alto;   //deben refrescarse constantemente, por eso en el LOOP
+  
+  int animMario = (Mario.X1/5)%8; //variable que controla la animacion
+  animGoombaI = (GoombaI.X1/5)%6;
+  animGoombaD = (GoombaD.X1/5)%6;
+  
+  
+  GoombasMovements(Izquierda);
+  GoombasMovements(Derecha);
+  MarioJump(animMario);
+  Colision(&GoombaI);
+  Colision(&GoombaD);      
+  Movements(animMario); //control de movimiento de mario y lakitu en X
+  MotionLimit();
+  BorradorDeRastro();
+}
+//***************************************************************************************************************************************
+// Función para inicializar LCD
+//***************************************************************************************************************************************
+void LCD_Init(void) {
+  pinMode(LCD_RST, OUTPUT);
+  pinMode(LCD_CS, OUTPUT);
+  pinMode(LCD_RS, OUTPUT);
+  pinMode(LCD_WR, OUTPUT);
+  pinMode(LCD_RD, OUTPUT);
+  for (uint8_t i = 0; i < 8; i++){
+    pinMode(DPINS[i], OUTPUT);
+  }
+  //****************************************
+  // Secuencia de Inicialización
+  //****************************************
+  digitalWrite(LCD_CS, HIGH);
+  digitalWrite(LCD_RS, HIGH);
+  digitalWrite(LCD_WR, HIGH);
+  digitalWrite(LCD_RD, HIGH);
+  digitalWrite(LCD_RST, HIGH);
+  delay(5);
+  digitalWrite(LCD_RST, LOW);
+  delay(20);
+  digitalWrite(LCD_RST, HIGH);
+  delay(150);
+  digitalWrite(LCD_CS, LOW);
+  //****************************************
+  LCD_CMD(0xE9);  // SETPANELRELATED
+  LCD_DATA(0x20);
+  //****************************************
+  LCD_CMD(0x11); // Exit Sleep SLEEP OUT (SLPOUT)
+  delay(100);
+  //****************************************
+  LCD_CMD(0xD1);    // (SETVCOM)
+  LCD_DATA(0x00);
+  LCD_DATA(0x71);
+  LCD_DATA(0x19);
+  //****************************************
+  LCD_CMD(0xD0);   // (SETPOWER) 
+  LCD_DATA(0x07);
+  LCD_DATA(0x01);
+  LCD_DATA(0x08);
+  //****************************************
+  LCD_CMD(0x36);  // (MEMORYACCESS)
+  LCD_DATA(0x40|0x80|0x20|0x08); // LCD_DATA(0x19);
+  //****************************************
+  LCD_CMD(0x3A); // Set_pixel_format (PIXELFORMAT)
+  LCD_DATA(0x05); // color setings, 05h - 16bit pixel, 11h - 3bit pixel
+  //****************************************
+  LCD_CMD(0xC1);    // (POWERCONTROL2)
+  LCD_DATA(0x10);
+  LCD_DATA(0x10);
+  LCD_DATA(0x02);
+  LCD_DATA(0x02);
+  //****************************************
+  LCD_CMD(0xC0); // Set Default Gamma (POWERCONTROL1)
+  LCD_DATA(0x00);
+  LCD_DATA(0x35);
+  LCD_DATA(0x00);
+  LCD_DATA(0x00);
+  LCD_DATA(0x01);
+  LCD_DATA(0x02);
+  //****************************************
+  LCD_CMD(0xC5); // Set Frame Rate (VCOMCONTROL1)
+  LCD_DATA(0x04); // 72Hz
+  //****************************************
+  LCD_CMD(0xD2); // Power Settings  (SETPWRNORMAL)
+  LCD_DATA(0x01);
+  LCD_DATA(0x44);
+  //****************************************
+  LCD_CMD(0xC8); //Set Gamma  (GAMMASET)
+  LCD_DATA(0x04);
+  LCD_DATA(0x67);
+  LCD_DATA(0x35);
+  LCD_DATA(0x04);
+  LCD_DATA(0x08);
+  LCD_DATA(0x06);
+  LCD_DATA(0x24);
+  LCD_DATA(0x01);
+  LCD_DATA(0x37);
+  LCD_DATA(0x40);
+  LCD_DATA(0x03);
+  LCD_DATA(0x10);
+  LCD_DATA(0x08);
+  LCD_DATA(0x80);
+  LCD_DATA(0x00);
+  //****************************************
+  LCD_CMD(0x2A); // Set_column_address 320px (CASET)
+  LCD_DATA(0x00);
+  LCD_DATA(0x00);
+  LCD_DATA(0x01);
+  LCD_DATA(0x3F);
+  //****************************************
+  LCD_CMD(0x2B); // Set_page_address 480px (PASET)
+  LCD_DATA(0x00);
+  LCD_DATA(0x00);
+  LCD_DATA(0x01);
+  LCD_DATA(0xE0);
+//  LCD_DATA(0x8F);
+  LCD_CMD(0x29); //display on 
+  LCD_CMD(0x2C); //display on
+
+  LCD_CMD(ILI9341_INVOFF); //Invert Off
+  delay(120);
+  LCD_CMD(ILI9341_SLPOUT);    //Exit Sleep
+  delay(120);
+  LCD_CMD(ILI9341_DISPON);    //Display on
+  digitalWrite(LCD_CS, HIGH);
+}
+//***************************************************************************************************************************************
+// Función para enviar comandos a la LCD - parámetro (comando)
+//***************************************************************************************************************************************
+void LCD_CMD(uint8_t cmd) {
+  digitalWrite(LCD_RS, LOW);
+  digitalWrite(LCD_WR, LOW);
+  GPIO_PORTB_DATA_R = cmd;
+  digitalWrite(LCD_WR, HIGH);
+}
+//***************************************************************************************************************************************
+// Función para enviar datos a la LCD - parámetro (dato)
+//***************************************************************************************************************************************
+void LCD_DATA(uint8_t data) {
+  digitalWrite(LCD_RS, HIGH);
+  digitalWrite(LCD_WR, LOW);
+  GPIO_PORTB_DATA_R = data;
+  digitalWrite(LCD_WR, HIGH);
+}
+//***************************************************************************************************************************************
+// Función para definir rango de direcciones de memoria con las cuales se trabajara (se define una ventana)
+//***************************************************************************************************************************************
+void SetWindows(unsigned int x1, unsigned int y1, unsigned int x2, unsigned int y2) {
+  LCD_CMD(0x2a); // Set_column_address 4 parameters
+  LCD_DATA(x1 >> 8);
+  LCD_DATA(x1);   
+  LCD_DATA(x2 >> 8);
+  LCD_DATA(x2);   
+  LCD_CMD(0x2b); // Set_page_address 4 parameters
+  LCD_DATA(y1 >> 8);
+  LCD_DATA(y1);   
+  LCD_DATA(y2 >> 8);
+  LCD_DATA(y2);   
+  LCD_CMD(0x2c); // Write_memory_start
+}
+//***************************************************************************************************************************************
+// Función para borrar la pantalla - parámetros (color)
+//***************************************************************************************************************************************
+void LCD_Clear(unsigned int c){  
+  unsigned int x, y;
+  LCD_CMD(0x02c); // write_memory_start
+  digitalWrite(LCD_RS, HIGH);
+  digitalWrite(LCD_CS, LOW);   
+  SetWindows(0, 0, 319, 239); // 479, 319);
+  for (x = 0; x < 320; x++)
+    for (y = 0; y < 240; y++) {
+      LCD_DATA(c >> 8); 
+      LCD_DATA(c); 
+    }
+  digitalWrite(LCD_CS, HIGH);
+} 
+//***************************************************************************************************************************************
+// Función para dibujar una línea horizontal - parámetros ( coordenada x, cordenada y, longitud, color)
+//*************************************************************************************************************************************** 
+void H_line(unsigned int x, unsigned int y, unsigned int l, unsigned int c) {  
+  unsigned int i, j;
+  LCD_CMD(0x02c); //write_memory_start
+  digitalWrite(LCD_RS, HIGH);
+  digitalWrite(LCD_CS, LOW);
+  l = l + x;
+  SetWindows(x, y, l, y);
+  j = l;// * 2;
+  for (i = 0; i < l; i++) {
+      LCD_DATA(c >> 8); 
+      LCD_DATA(c); 
+  }
+  digitalWrite(LCD_CS, HIGH);
+}
+//***************************************************************************************************************************************
+// Función para dibujar una línea vertical - parámetros ( coordenada x, cordenada y, longitud, color)
+//*************************************************************************************************************************************** 
+void V_line(unsigned int x, unsigned int y, unsigned int l, unsigned int c) {  
+  unsigned int i,j;
+  LCD_CMD(0x02c); //write_memory_start
+  digitalWrite(LCD_RS, HIGH);
+  digitalWrite(LCD_CS, LOW);
+  l = l + y;
+  SetWindows(x, y, x, l);
+  j = l; //* 2;
+  for (i = 1; i <= j; i++) {
+    LCD_DATA(c >> 8); 
+    LCD_DATA(c);
+  }
+  digitalWrite(LCD_CS, HIGH);  
+}
+//***************************************************************************************************************************************
+// Función para dibujar un rectángulo - parámetros ( coordenada x, cordenada y, ancho, alto, color)
+//***************************************************************************************************************************************
+void Rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h, unsigned int c) {
+  H_line(x  , y  , w, c);
+  H_line(x  , y+h, w, c);
+  V_line(x  , y  , h, c);
+  V_line(x+w, y  , h, c);
+}
+//***************************************************************************************************************************************
+// Función para dibujar un rectángulo relleno - parámetros ( coordenada x, cordenada y, ancho, alto, color)
+//***************************************************************************************************************************************
+void FillRect(unsigned int x, unsigned int y, unsigned int w, unsigned int h, unsigned int c) {
+  LCD_CMD(0x02c); // write_memory_start
+  digitalWrite(LCD_RS, HIGH);
+  digitalWrite(LCD_CS, LOW); 
+  
+  unsigned int x2, y2;
+  x2 = x+w;
+  y2 = y+h;
+  SetWindows(x, y, x2-1, y2-1);
+  unsigned int k = w*h*2-1;
+  unsigned int i, j;
+  for (int i = 0; i < w; i++) {
+    for (int j = 0; j < h; j++) {
+      LCD_DATA(c >> 8);
+      LCD_DATA(c);
+      
+      //LCD_DATA(bitmap[k]);    
+      k = k - 2;
+     } 
+  }
+  digitalWrite(LCD_CS, HIGH);
+}
+//***************************************************************************************************************************************
+// Función para dibujar texto - parámetros ( texto, coordenada x, cordenada y, color, background) 
+//***************************************************************************************************************************************
+void LCD_Print(String text, int x, int y, int fontSize, int color, int background) {
+  int fontXSize ;
+  int fontYSize ;
+  
+  if(fontSize == 1){
+    fontXSize = fontXSizeSmal ;
+    fontYSize = fontYSizeSmal ;
+  }
+  if(fontSize == 2){
+    fontXSize = fontXSizeBig ;
+    fontYSize = fontYSizeBig ;
+  }
+  
+  char charInput ;
+  int cLength = text.length();
+  Serial.println(cLength,DEC);
+  int charDec ;
+  int c ;
+  int charHex ;
+  char char_array[cLength+1];
+  text.toCharArray(char_array, cLength+1) ;
+  for (int i = 0; i < cLength ; i++) {
+    charInput = char_array[i];
+    Serial.println(char_array[i]);
+    charDec = int(charInput);
+    digitalWrite(LCD_CS, LOW);
+    SetWindows(x + (i * fontXSize), y, x + (i * fontXSize) + fontXSize - 1, y + fontYSize );
+    long charHex1 ;
+    for ( int n = 0 ; n < fontYSize ; n++ ) {
+      if (fontSize == 1){
+        charHex1 = pgm_read_word_near(smallFont + ((charDec - 32) * fontYSize) + n);
+      }
+      if (fontSize == 2){
+        charHex1 = pgm_read_word_near(bigFont + ((charDec - 32) * fontYSize) + n);
+      }
+      for (int t = 1; t < fontXSize + 1 ; t++) {
+        if (( charHex1 & (1 << (fontXSize - t))) > 0 ) {
+          c = color ;
+        } else {
+          c = background ;
+        }
+        LCD_DATA(c >> 8);
+        LCD_DATA(c);
+      }
+    }
+    digitalWrite(LCD_CS, HIGH);
+  }
+}
+//***************************************************************************************************************************************
+// Función para dibujar una imagen a partir de un arreglo de colores (Bitmap) Formato (Color 16bit R 5bits G 6bits B 5bits)
+//***************************************************************************************************************************************
+void LCD_Bitmap(unsigned int x, unsigned int y, unsigned int width, unsigned int height, unsigned char bitmap[]){  
+  LCD_CMD(0x02c); // write_memory_start
+  digitalWrite(LCD_RS, HIGH);
+  digitalWrite(LCD_CS, LOW); 
+  
+  unsigned int x2, y2;
+  x2 = x+width;
+  y2 = y+height;
+  SetWindows(x, y, x2-1, y2-1);
+  unsigned int k = 0;
+  unsigned int i, j;
+
+  for (int i = 0; i < width; i++) {
+    for (int j = 0; j < height; j++) {
+      LCD_DATA(bitmap[k]);
+      LCD_DATA(bitmap[k+1]);
+      //LCD_DATA(bitmap[k]);    
+      k = k + 2;
+     } 
+  }
+  digitalWrite(LCD_CS, HIGH);
+}
+//***************************************************************************************************************************************
+// Función para dibujar una imagen sprite - los parámetros columns = número de imagenes en el sprite, index = cual desplegar, flip = darle vuelta
+//***************************************************************************************************************************************
+void LCD_Sprite(int x, int y, int width, int height, unsigned char bitmap[],int columns, int index, char flip, char offset){
+  LCD_CMD(0x02c); // write_memory_start
+  digitalWrite(LCD_RS, HIGH);
+  digitalWrite(LCD_CS, LOW); 
+
+  unsigned int x2, y2;
+  x2 =   x+width;
+  y2=    y+height;
+  SetWindows(x, y, x2-1, y2-1);
+  int k = 0;
+  int ancho = ((width*columns));
+  if(flip){
+  for (int j = 0; j < height; j++){
+      k = (j*(ancho) + index*width -1 - offset)*2;
+      k = k+width*2;
+     for (int i = 0; i < width; i++){
+      LCD_DATA(bitmap[k]);
+      LCD_DATA(bitmap[k+1]);
+      k = k - 2;
+     } 
+  }
+  }else{
+     for (int j = 0; j < height; j++){
+      k = (j*(ancho) + index*width + 1 + offset)*2;
+     for (int i = 0; i < width; i++){
+      LCD_DATA(bitmap[k]);
+      LCD_DATA(bitmap[k+1]);
+      k = k + 2;
+     } 
+  }
+    
+    
+    }
+  digitalWrite(LCD_CS, HIGH);
+}
+
+//*************************************************************************************************************
+//FUNCIONes PARA MOVIMIENTO DE MARIO
+//*************************************************************************************************************
+void BorradorDeRastro(){  //dibuja lineas al rededor de los personajes para no dejar rastro
+  //GOOMBAI                    pongo a Goomba primero porque si chocan, quiero que Mario borre
+  //                          a Goomba, no Goomba a Mario
+  V_line(GoombaI.X1-1, GoombaI.Y1, GoombaI.alto, 0x861F); //borrador de rastro izquierdo
+  //V_line(GoombaI.X2+1, GoombaI.Y1, GoombaI.alto, 0x861F); //borrador de rastro derecho
+  //H_line(Mario.X1, Mario.Y1-1, Mario.ancho, 0x861F); //borrador de rastro superior
+  //H_line(Mario.X1, Mario.Y2, Mario.ancho, 0x861F); //borrador de rastro superior
+  //MARIO
+  V_line(Mario.X1-1, Mario.Y1, Mario.alto, 0x861F); //borrador de rastro izquierdo
+  V_line(Mario.X2+1, Mario.Y1, Mario.alto, 0x861F); //borrador de rastro derecho
+  H_line(Mario.X1, Mario.Y1-1, Mario.ancho, 0x861F); //borrador de rastro superior
+  H_line(Mario.X1, Mario.Y2, Mario.ancho, 0x861F); //borrador de rastro superior
+  
+  }
+
+void MotionLimit(){ //control de movimiento, tiene los limites de movimiento de personajes
+  if(Mario.X1<28){ //limites de movimiento de Mario
+      Mario.X1=28; 
+    }
+  if(Mario.X2>289){
+      Mario.X1 = 252; 
+    }             //fin de limite de movimiento mario
+//------------------------------------------------------
+  if(GoombaI.X1<1){ //limites de movimiento de GoombaI
+      GoombaI.X1=1; 
+    }
+  if(GoombaI.X2>319-27){
+      //GoombaI.X1 = 292-GoombaI.ancho; 
+      GoombaI.activador=0;
+      LCD_Bitmap(243, 180, 46, 40, nube);
+      //while(generalTiming%10!=2){}
+      delay(200);
+      FillRect(243, 180, 46, 40, 0x861F);
+      GoombaI.X1=28;
+    }             //fin de limite de movimiento GoombaI
+
+  if(GoombaD.X1>291){ //limites de movimiento de GoombaD
+    GoombaD.X1=291; 
+    }
+  if(GoombaD.X1<28){
+      //GoombaI.X1 = 292-GoombaI.ancho; 
+      GoombaD.activador=0;
+      LCD_Bitmap(28, 180, 46, 40, nube);
+      //while(generalTiming%10!=2){}
+      delay(200);
+      FillRect(28, 180, 46, 40, 0x861F);
+      GoombaD.X1=264;
+    }             //fin de limite de movimiento GoombaD
+//------------------------------------------------------
+  if(Lakitu.X1<1){ //limites de movimiento de Lakitu
+      Lakitu.X1=1; 
+    }
+  if(Lakitu.X2>318){
+      Lakitu.X1 = 286; 
+    }             //fin de limite de movimiento Lakitu
+  }
+
+void Movements(int animMario){   //control de movimiento de personajes
+  //MARIO
+  if(digitalRead(R_Mario)==LOW){  //movimiento derecha
+      Mario.X1++;
+      LCD_Sprite(Mario.X1, Mario.Y1, Mario.ancho, Mario.alto, Mariorun,8,animMario,0,1);
+      prevd=0; 
+    }
+  if(digitalRead(L_Mario)==LOW){ //movimiento izquierda
+      Mario.X1--;
+      LCD_Sprite(Mario.X1, Mario.Y1, Mario.ancho, Mario.alto, Mariorun,8,animMario,1,1);
+      prevd=1;
+    }
+    if(digitalRead(J_Mario)==LOW){ //salto
+      if(jump_c==0){
+          jump_f=1;
+        }  
+    }
+
+    //LAKITU
+    if(digitalRead(R_Lakitu)==LOW){  //movimiento derecha
+      Lakitu.X1++;
+      LCD_Bitmap(Lakitu.X1, Lakitu.Y1, Lakitu.ancho, Lakitu.alto, lakitu); 
+    }
+    if(digitalRead(L_Lakitu)==LOW){ //movimiento izquierda
+      Lakitu.X1--;
+      LCD_Bitmap(Lakitu.X1, Lakitu.Y1, Lakitu.ancho, Lakitu.alto, lakitu); 
+    }
+  }
+
+void MarioJump(int animMario){
+  if(jump_f==1){    //condiciones de salto de Mario
+    //momento en el que se mueve hacia arriba
+    jump_c++;  //contador que incrementa en cada ciclo del loop y me sirve para tiempo de salto de mario
+    Mario.Y1--;
+    LCD_Sprite(Mario.X1, Mario.Y1, Mario.ancho, Mario.alto, Mariorun,8,animMario,prevd,1);
+    if(jump_c==40){
+        jump_f=2;
+      }
+    }else if(jump_f==2){
+      jump_c++;
+      if(jump_c==40+const_jump){
+        jump_c=40;
+        jump_f=3;
+      }
+      }else if(jump_f==3){  //momento en el que se mueve hacia abajo
+        jump_c--;  //contador que incrementa en cada ciclo del loop y me sirve para tiempo de salto de mario
+        Mario.Y1++;
+        LCD_Sprite(Mario.X1, Mario.Y1, Mario.ancho, Mario.alto, Mariorun,8,animMario,prevd,1);
+        if(jump_c==0){
+          jump_f=0;
+          }
+        }
+  }
+
+void GoombasMovements(int option){
+  if(option==Izquierda){
+    if((goomba_t_c%const_v_G==0)&&(GoombaI.activador==1)){
+    GoombaI.X1++;
+    LCD_Sprite(GoombaI.X1, GoombaI.Y1, GoombaI.ancho, GoombaI.alto, goomba,6,animGoombaI,0,1);
+    }
+    }else if(option==Derecha){
+      if((goomba_t_c%const_v_G==0)&&(GoombaD.activador==1)){
+      GoombaD.X1--;
+      LCD_Sprite(GoombaD.X1, GoombaD.Y1, GoombaD.ancho, GoombaD.alto, goomba,6,animGoombaD,1,1);
+    }
+      }
+  }
+
+void Colision(struct Avatars *colisionador){  //funcion que detiene el juego en caso de colision con el colisionador que indique
+  //COLISIONES
+  //if(((Mario.X1==GoombaI.X2)&&(GoombaI.Y1<Mario.Y2))||((Mario.X2==GoombaI.X1)&&(GoombaI.Y1<Mario.Y2))){
+  //if(((Mario.X1>=GoombaI.X1)&&(Mario.X1<=GoombaI.X2-offestx)&&(GoombaI.Y1<Mario.Y2+offesty)&&(GoombaI.activador==1))||((Mario.X2>=GoombaI.X1+offestx)&&(Mario.X2<=GoombaI.X2)&&(GoombaI.Y1<Mario.Y2+offesty)&&(GoombaI.activador==1))){
+  int offestx=7, offesty=-10;
+  if(((Mario.X1>=colisionador->X1)&&(Mario.X1<=colisionador->X2-offestx)&&(colisionador->Y1<Mario.Y2+offesty)&&(colisionador->activador==1))||((Mario.X2>=colisionador->X1+offestx)&&(Mario.X2<=colisionador->X2)&&(colisionador->Y1<Mario.Y2+offesty)&&(colisionador->activador==1))){
+    //String text2 = "--PERDISTE WEY--";
+    //LCD_Print(text2, 0, 100, 2, 0xffff, 0x421b);
+    LCD_Bitmap(92, 60, 134, 40, GAME);
+    LCD_Bitmap(92, 102, 134, 40, OVER);
+    delay(3500);
+    }
+  //COLISIONES
+}
