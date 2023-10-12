@@ -1,0 +1,64 @@
+FORMA 1 de escribir bit por bit en una variable
+//-----------------------------------------------------------------------
+ if (digitalRead(R_Mario) == LOW) {
+    CONTROL &= ~(1 << 0);
+  } else {
+      CONTROL |= (1 << 0);
+  }
+
+  if (digitalRead(L_Mario) == LOW) {
+      CONTROL &= ~(1 << 1);
+  } else {
+      CONTROL |= (1 << 1);
+  }
+
+  if (digitalRead(J_Mario) == LOW) {
+      CONTROL &= ~(1 << 2);
+  } else {
+      CONTROL |= (1 << 2);
+  }
+
+  if (digitalRead(R_Enemy) == LOW) {
+      CONTROL &= ~(1 << 3);
+  } else {
+      CONTROL |= (1 << 3);
+  }
+
+  if (digitalRead(L_Enemy) == LOW) {
+      CONTROL &= ~(1 << 4);
+  } else {
+      CONTROL |= (1 << 4);
+  }
+
+  if (digitalRead(DropGI) == LOW) {
+      CONTROL &= ~(1 << 5);
+  } else {
+      CONTROL |= (1 << 5);
+  }
+
+  if (digitalRead(DropGD) == LOW) {
+      CONTROL &= ~(1 << 6);
+  } else {
+      CONTROL |= (1 << 6);
+  }
+
+  if (digitalRead(DropB) == LOW) {
+      CONTROL &= ~(1 << 7);
+  } else {
+      CONTROL |= (1 << 7);
+  }
+//-----------------------------------------------------------------------
+
+FORMA 2
+//-----------------------------------------------------------------------
+int pins[] = {R_Mario, L_Mario, J_Mario, R_Enemy, L_Enemy, DropGI, DropGD, DropB};
+
+for (int i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
+    if (digitalRead(pins[i]) == LOW) {
+        CONTROL &= ~(1 << i);
+    } else {
+        CONTROL |= (1 << i);
+    }
+}
+
+//-----------------------------------------------------------------------
